@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>聊天</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;font-family:-apple-system,'Segoe UI',sans-serif;font-size:15px;background:#0f0f0f;color:#d4d4d4}
+input,button,textarea{font-size:inherit;font-family:inherit;outline:none;border:none;background:none;color:inherit}
+#chat-page{display:flex;flex-direction:column;height:100%}
+#top-bar{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid #1a1a1a;min-height:36px}
+#chat-title{color:#999;font-size:13px;cursor:pointer;flex:1}
+#chat-title:hover{color:#bbb}
+#new-chat-btn{color:#5b9aff;font-size:13px;cursor:pointer;padding:2px 6px}
+#messages{flex:1;overflow-y:auto;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.msg{padding:6px 0;line-height:1.6;word-break:break-word}
+.msg.user{color:#d4d4d4;text-align:right}
+.msg.assistant{color:#d4d4d4}
+.msg .time{font-size:11px;color:#555;margin-top:2px}
+.msg.system{text-align:center;color:#555;font-size:12px;padding:4px 0}
+.msg .delta-cursor{animation:blink .8s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.msg pre{background:#181818;border:1px solid #2a2a2a;border-radius:4px;padding:6px 10px;overflow-x:auto;margin:4px 0;font-size:13px}
+.msg code{background:#181818;padding:1px 4px;border-radius:3px;font-size:13px}
+.msg pre code{background:none;padding:0}
+.msg blockquote{border-left:2px solid #444;padding-left:10px;color:#777;margin:4px 0}
+.msg li{margin-left:16px}
+.msg strong{color:#eee}
+.msg em{color:#aaa}
+#input-area{display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:1px solid #1a1a1a}
+#msg-input{flex:1;padding:8px 4px;resize:none;max-height:80px;line-height:1.4;color:#d4d4d4}
+#msg-input::placeholder{color:#555}
+#msg-input:disabled{opacity:.4}
+#send-btn{color:#5b9aff;font-size:15px;cursor:pointer;padding:6px 10px}
+#send-btn:disabled{opacity:.3;cursor:default}
+#status{text-align:center;color:#555;padding:30px 16px;font-size:13px}
+#load-more{text-align:center;padding:6px;color:#555;font-size:12px;cursor:pointer}
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
+#chat-list-overlay{display:none;position:fixed;inset:0;z-index:100}
+#chat-list-overlay.show{display:block}
+#chat-list-bg{position:absolute;inset:0;background:rgba(0,0,0,.5)}
+#chat-list-panel{position:absolute;bottom:0;left:0;right:0;background:#181818;border-radius:12px 12px 0 0;max-height:60%;overflow-y:auto;padding:12px 0}
+#chat-list-panel .panel-title{text-align:center;font-size:13px;color:#555;padding:4px 16px 8px}
+.chat-item{display:flex;align-items:center;padding:10px 16px;cursor:pointer;color:#d4d4d4;font-size:14px}
+.chat-item:hover{background:#222}
+.chat-item.active{color:#5b9aff}
+.chat-item .del-btn{margin-left:auto;color:#555;font-size:13px;padding:2px 6px}
+.chat-item .del-btn:hover{color:#f66}
+</style>
+</head>
+<body>
+<div id="chat-page">
+  <div id="top-bar">
+    <div id="chat-title">对话列表</div>
+    <button id="new-chat-btn">+ 新建</button>
+  </div>
+  <div id="messages"><div id="status">连接中...</div></div>
+  <div id="input-area">
+    <textarea id="msg-input" rows="1" placeholder="输入消息" disabled></textarea>
+    <button id="send-btn" disabled>发送</button>
+  </div>
+</div>
+<div id="chat-list-overlay">
+  <div id="chat-list-bg"></div>
+  <div id="chat-list-panel">
+    <div class="panel-title">切换对话</div>
+    <div id="chat-list-content"></div>
+  </div>
+</div>
+<script>
+var BASE='http://'+location.hostname+':8094';
+var TOKEN='b1a9f1e4f24742deb5bd1fa9afe97179';
+var currentChatId=void 0,messages=[],chats=[],sending=false,loadingMore=false,hasMoreBefore=false,nextBeforeTs=void 0,abortController=void 0;
+var messagesEl=document.getElementById('messages'),msgInput=document.getElementById('msg-input'),sendBtn=document.getElementById('send-btn');
+var chatTitle=document.getElementById('chat-title'),overlay=document.getElementById('chat-list-overlay');
+var chatListContent=document.getElementById('chat-list-content'),newChatBtn=document.getElementById('new-chat-btn');
+
+async function apiJson(path,init){
+  var resp=await fetch(BASE+path,{...init,headers:{Accept:'application/json','Content-Type':'application/json',Authorization:'Bearer '+TOKEN,...(init?.headers||{})}});
+  var text=await resp.text();var data;
+  try{data=JSON.parse(text)}catch{data={}}
+  if(!resp.ok)throw new Error(data.error||'HTTP '+resp.status);
+  return data;
+}
+
+function formatTime(ts){
+  var ms=ts>100000000000?ts:ts*1000;
+  var d=new Date(ms);
+  if(isNaN(d.getTime()))return '--:--';
+  var pad=function(n){return String(n).padStart(2,'0')};
+  return pad(d.getHours())+':'+pad(d.getMinutes());
+}
+
+function scrollBottom(){setTimeout(function(){messagesEl.scrollTop=messagesEl.scrollHeight},50)}
+
+function mdToHtml(text){
+  if(!text)return '';
+  return text
+    .replace(/```(\w*)\n?([\s\S]*?)```/g,'<pre><code>$2</code></pre>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g,'<em>$1</em>')
+    .replace(/~~([^~]+)~~/g,'<del>$1</del>')
+    .replace(/^### (.+)$/gm,'<h4>$1</h4>')
+    .replace(/^## (.+)$/gm,'<h3>$1</h3>')
+    .replace(/^# (.+)$/gm,'<h2>$1</h2>')
+    .replace(/^> (.+)$/gm,'<blockquote>$1</blockquote>')
+    .replace(/^[-*] (.+)$/gm,'<li>$1</li>')
+    .replace(/^\d+\.\s+(.+)$/gm,'<li>$1</li>')
+    .replace(/\n/g,'<br>');
+}
+
+function getDisplayHtml(m){
+  if(m.display_content)return mdToHtml(m.display_content);
+  if(!m.content_blocks||m.content_blocks.length===0)return mdToHtml(m.content_raw||'');
+  var texts=m.content_blocks.filter(function(b){return b.kind==='text'}).map(function(b){return b.content||''}).join('').trim();
+  return mdToHtml(texts||m.content_raw||'');
+}
+
+function getChatName(c){return c.title||c.id.slice(0,8)}
+
+function updateChatTitle(){chatTitle.textContent=chats.find(function(c){return c.id===currentChatId})?getChatName(chats.find(function(c){return c.id===currentChatId})):'选择对话'}
+
+function showChatList(){
+  chatListContent.innerHTML='';
+  for(var i=0;i<chats.length;i++){
+    var c=chats[i];
+    var div=document.createElement('div');div.className='chat-item'+(c.id===currentChatId?' active':'');
+    var name=document.createElement('span');name.textContent=getChatName(c);div.appendChild(name);
+    (function(cid){
+      var del=document.createElement('span');del.className='del-btn';del.textContent='×';
+      del.onclick=async function(e){e.stopPropagation();if(!confirm('删除该对话？'))return;try{await apiJson('/api/web/chats/'+cid,{method:'DELETE'});chats=chats.filter(function(x){return x.id!==cid});if(cid===currentChatId){if(chats.length>0){switchChat(chats[0].id)}else{currentChatId=void 0;messages=[];renderMessages();updateChatTitle()}}showChatList()}catch(e){}};
+      div.appendChild(del);
+      div.onclick=function(){switchChat(cid);hideChatList()};
+    })(c.id);
+    chatListContent.appendChild(div);
+  }
+  overlay.classList.add('show');
+}
+
+function hideChatList(){overlay.classList.remove('show')}
+
+async function switchChat(id){
+  if(id===currentChatId)return;
+  try{await apiJson('/api/web/chats/'+id,{method:'PUT',body:JSON.stringify({set_current:true})})}catch(e){}
+  currentChatId=id;updateChatTitle();await loadMessages(id);
+}
+
+function renderMessages(){
+  var prevScroll=messagesEl.scrollTop,prevHeight=messagesEl.scrollHeight;
+  messagesEl.innerHTML='';
+  if(hasMoreBefore){var d=document.createElement('div');d.id='load-more';d.textContent='加载更多';d.onclick=loadMoreMessages;messagesEl.appendChild(d)}
+  for(var i=0;i<messages.length;i++){
+    var m=messages[i];
+    var div=document.createElement('div');
+    if(m.sender==='user'||m.sender==='assistant'){
+      div.className='msg '+m.sender;
+      var c=document.createElement('div');c.innerHTML=getDisplayHtml(m);div.appendChild(c);
+      if(m.streaming){var cur=document.createElement('span');cur.className='delta-cursor';cur.textContent=' ▍';c.appendChild(cur)}
+      var t=document.createElement('div');t.className='time';t.textContent=formatTime(m.timestamp);div.appendChild(t);
+    }else{div.className='msg system';div.textContent=m.content_raw||''}
+    messagesEl.appendChild(div);
+  }
+  if(prevScroll>0&&prevHeight>0)requestAnimationFrame(function(){messagesEl.scrollTop=messagesEl.scrollHeight-prevHeight+prevScroll});else scrollBottom();
+}
+
+async function loadMoreMessages(){
+  if(loadingMore||!hasMoreBefore||!nextBeforeTs)return;
+  loadingMore=true;
+  var el=document.getElementById('load-more');if(el)el.textContent='加载中';
+  try{
+    var data=await apiJson('/api/web/chats/'+encodeURIComponent(currentChatId)+'/messages?limit=30&before_timestamp='+nextBeforeTs);
+    var old=data.messages||[];hasMoreBefore=data.has_more_before||false;nextBeforeTs=data.next_before_timestamp||void 0;
+    var exist=new Set(messages.map(function(m){return m.id}));messages=[].concat(old.filter(function(m){return !exist.has(m.id)})).concat(messages);renderMessages();
+  }catch(e){if(el)el.textContent='加载更多'}
+  loadingMore=false;
+}
+
+async function loadMessages(chatId){
+  messagesEl.innerHTML='<div id="status">加载中</div>';
+  try{
+    var data=await apiJson('/api/web/chats/'+encodeURIComponent(chatId)+'/messages?limit=50');
+    messages=data.messages||[];hasMoreBefore=data.has_more_before||false;nextBeforeTs=data.next_before_timestamp||void 0;
+    renderMessages();
+  }catch(e){messagesEl.innerHTML='<div id="status">加载失败</div>'}
+}
+
+async function sendMessage(text){
+  if(sending||!text.trim()||!currentChatId)return;
+  sending=true;msgInput.disabled=true;sendBtn.disabled=true;msgInput.placeholder='发送中';
+  abortController=new AbortController();
+  var userMsg={id:'tmp-u'+Date.now(),sender:'user',content_raw:text,display_content:text,timestamp:Math.floor(Date.now()/1000)};
+  messages.push(userMsg);renderMessages();scrollBottom();
+  var aiMsg={id:'tmp-a'+Date.now(),sender:'assistant',content_raw:'',display_content:'',timestamp:Math.floor(Date.now()/1000),streaming:true};
+  messages.push(aiMsg);renderMessages();scrollBottom();
+  try{
+    var resp=await fetch(BASE+'/api/web/chats/'+encodeURIComponent(currentChatId)+'/messages/stream',{
+      method:'POST',headers:{Authorization:'Bearer '+TOKEN,Accept:'text/event-stream','Content-Type':'application/json'},
+      body:JSON.stringify({message:text,attachment_ids:[],return_tool_status:false}),signal:abortController.signal
+    });
+    if(!resp.ok){var t=await resp.text();var m='失败';try{m=JSON.parse(t).error||m}catch{}throw new Error(m)}
+    var reader=resp.body.getReader(),decoder=new TextDecoder();var buffer='';
+    while(true){
+      var result=await reader.read();if(result.done)break;
+      buffer+=decoder.decode(result.value,{stream:true});
+      var blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||'';
+      for(var j=0;j<blocks.length;j++){
+        var b=blocks[j];
+        var ev=parseSSE(b.trim());if(!ev)continue;
+        if(ev.event==='assistant_delta'&&ev.delta){
+          var last=messages[messages.length-1];
+          if(last&&last.streaming){
+            last.content_raw+=ev.delta;last.display_content=last.content_raw;
+            var els=messagesEl.querySelectorAll('.msg'),el=els[els.length-1];
+            if(el&&el.classList.contains('assistant')){
+              var ce=el.querySelector('div:first-child');
+              if(ce)ce.innerHTML=mdToHtml(last.display_content)+' <span class="delta-cursor">▍</span>';
+            }
+            scrollBottom();
+          }
+        }else if(ev.event==='assistant_done'){
+          var last=messages[messages.length-1];
+          if(last){last.streaming=false;if(ev.message){last.id=ev.message.id;last.content_raw=ev.message.content_raw;last.display_content=ev.message.display_content||ev.message.content_raw;last.timestamp=ev.message.timestamp}}
+          renderMessages();scrollBottom();
+        }else if(ev.event==='error'){throw new Error(ev.error||'错误')}
+      }
+    }
+    if(buffer){var ev=parseSSE(buffer.trim());if(ev&&ev.event==='assistant_done'){var last=messages[messages.length-1];if(last){last.streaming=false;if(ev.message){last.id=ev.message.id;last.content_raw=ev.message.content_raw;last.display_content=ev.message.display_content||ev.message.content_raw;last.timestamp=ev.message.timestamp}}renderMessages();scrollBottom()}}
+  }catch(e){
+    if(e.name==='AbortError')return;
+    var last=messages[messages.length-1];if(last&&last.streaming)messages.pop();
+    messages.push({id:'err'+Date.now(),sender:'system',content_raw:e.message});renderMessages();scrollBottom();
+  }
+  sending=false;msgInput.disabled=false;sendBtn.disabled=false;msgInput.placeholder='输入消息';msgInput.focus();
+}
+
+function parseSSE(block){
+  var lines=block.split(/\r?\n/);var name='';var data=[];
+  for(var i=0;i<lines.length;i++){var l=lines[i];if(l.startsWith('event:'))name=l.slice(6).trim();else if(l.startsWith('data:'))data.push(l.slice(5))}
+  if(!name||data.length===0)return void 0;
+  try{return{event:name,...JSON.parse(data.join('\n'))}}catch{return void 0}
+}
+
+(async function(){
+  try{
+    var boot=await apiJson('/api/web/bootstrap');
+    chats=await apiJson('/api/web/chats');
+    if(boot.current_chat_id&&chats.some(function(c){return c.id===boot.current_chat_id})){currentChatId=boot.current_chat_id}
+    else if(chats.length>0){currentChatId=chats[0].id}
+    else{var nc=await apiJson('/api/web/chats',{method:'POST',body:JSON.stringify({set_current:true})});currentChatId=nc.id;chats=[nc]}
+    updateChatTitle();
+    if(currentChatId){msgInput.disabled=false;sendBtn.disabled=false;await loadMessages(currentChatId)}
+  }catch(e){messagesEl.innerHTML='<div id="status">连接失败</div>'}
+})();
+
+chatTitle.onclick=function(){showChatList()};
+document.getElementById('chat-list-bg').onclick=function(){hideChatList()};
+newChatBtn.onclick=async function(){
+  try{
+    var nc=await apiJson('/api/web/chats',{method:'POST',body:JSON.stringify({set_current:true})});
+    chats.unshift(nc);await switchChat(nc.id);hideChatList();
+  }catch(e){}
+};
+sendBtn.onclick=function(){var t=msgInput.value;if(!t.trim()||sending)return;msgInput.value='';msgInput.style.height='auto';sendMessage(t)};
+msgInput.onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendBtn.click()}};
+msgInput.oninput=function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,80)+'px'};
+</script>
+</body>
+</html>
