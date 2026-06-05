@@ -7,6 +7,25 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;font-family:-apple-system,'Segoe UI',sans-serif;font-size:15px;background:#0f0f0f;color:#d4d4d4}
+@media(prefers-color-scheme:light){html,body{background:#fafafa;color:#222}
+#top-bar{border-bottom-color:#e0e0e0}
+#chat-title{color:#666}
+#messages .msg .time{color:#aaa}
+.msg pre,.msg code{background:#f0f0f0;border-color:#ddd}
+.msg blockquote{border-left-color:#ccc;color:#888}
+#input-area{border-top-color:#e0e0e0}
+#msg-input::placeholder{color:#bbb}
+#send-btn{color:#1a73e8}
+#chat-list-overlay #chat-list-bg{background:rgba(200,200,200,.4)}
+#chat-list-overlay #chat-list-panel{background:#f5f5f5}
+#chat-list-panel .panel-title{color:#999}
+.chat-item{color:#222}
+.chat-item:hover{background:#e8e8e8}
+.chat-item.active{color:#1a73e8}
+.chat-item .del-btn{color:#999}
+#status{color:#999}
+#load-more{color:#999}
+::-webkit-scrollbar-thumb{background:#ccc}}
 input,button,textarea{font-size:inherit;font-family:inherit;outline:none;border:none;background:none;color:inherit}
 #chat-page{display:flex;flex-direction:column;height:100%}
 #top-bar{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid #1a1a1a;min-height:36px}
